@@ -257,10 +257,10 @@ func fetchInput(ctx context.Context, s *Session, output buf.Writer) {
 		return
 	}
 
-	if err := buf.Copy(s.input, writer); err != nil {
+	if err := buf.Copy(s, writer); err != nil {
 		newError("failed to fetch all input").Base(err).WriteToLog(session.ExportIDToError(ctx))
 		writer.hasError = true
-		common.Interrupt(s.input)
+		common.Interrupt(s)
 		return
 	}
 }

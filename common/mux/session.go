@@ -10,15 +10,42 @@ import (
 
 type SessionManager struct {
 	sync.RWMutex
-	sessions map[uint16]*Session
-	count    uint16
-	closed   bool
+	sessions    map[uint16]*Session
+	count       uint16
+	closed      bool
+	requestChan chan uint16
 }
 
 func NewSessionManager() *SessionManager {
-	return &SessionManager{
-		count:    0,
-		sessions: make(map[uint16]*Session, 16),
+	result := SessionManager{
+		count:       0,
+		sessions:    make(map[uint16]*Session, 16),
+		requestChan: make(chan uint16),
+	}
+
+	go result.sendToken()
+
+	return &result
+}
+
+func (m *SessionManager) sendToken() {
+	for {
+		m.RLock()
+		var hit = false
+		for _, session := range m.sessions {
+			select {
+			case session.tokenChan <- 233:
+				hit = true
+			default:
+			}
+		}
+		m.RUnlock()
+		if !hit {
+			_, more := <-m.requestChan
+			if !more {
+				break
+			}
+		}
 	}
 }
 
@@ -53,8 +80,9 @@ func (m *SessionManager) Allocate() *Session {
 
 	m.count++
 	s := &Session{
-		ID:     m.count,
-		parent: m,
+		ID:        m.count,
+		parent:    m,
+		tokenChan: make(chan uint16),
 	}
 	m.sessions[s.ID] = s
 	return s
@@ -67,6 +95,8 @@ func (m *SessionManager) Add(s *Session) {
 	if m.closed {
 		return
 	}
+
+	s.tokenChan = make(chan uint16)
 
 	m.count++
 	m.sessions[s.ID] = s
@@ -124,6 +154,7 @@ func (m *SessionManager) Close() error {
 	}
 
 	m.closed = true
+	close(m.requestChan)
 
 	for _, s := range m.sessions {
 		common.Close(s.input)  // nolint: errcheck
@@ -141,6 +172,7 @@ type Session struct {
 	parent       *SessionManager
 	ID           uint16
 	transferType protocol.TransferType
+	tokenChan    chan uint16
 }
 
 // Close closes all resources associated with this session.
@@ -157,4 +189,15 @@ func (s *Session) NewReader(reader *buf.BufferedReader) buf.Reader {
 		return NewStreamReader(reader)
 	}
 	return NewPacketReader(reader)
+}
+
+func (s *Session) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	select {
+	case s.parent.requestChan <- s.ID:
+		break
+	default:
+		<-s.tokenChan
+	}
+	buf, err := s.input.ReadMultiBuffer()
+	return buf, err
 }
